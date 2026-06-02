@@ -58,7 +58,6 @@ html, body, [data-testid="stAppViewContainer"] {
     border-bottom: 1px solid var(--border) !important;
 }
 
-/* ── Hide Streamlit branding ── */
 #MainMenu, footer, header { visibility: hidden; }
 .block-container { padding-top: 1.5rem !important; padding-bottom: 3rem !important; }
 
@@ -248,20 +247,27 @@ html, body, [data-testid="stAppViewContainer"] {
 """, unsafe_allow_html=True)
 
 
-# ─── INIT GRAPH WITH SESSION STATE BACKING ────────────────────────────────────
-@st.cache_resource
-def get_initial_graph():
-    return FoodGraph()
-
-# Simpan objek graf ke session state agar manipulasi CRUD bertahan selama sesi aktif
+# ─── SAFE BACKING UP FOR GRAPH IN SESSION STATE ───────────────────────────────
 if 'graph_instance' not in st.session_state:
-    st.session_state.graph_instance = get_initial_graph()
+    try:
+        st.session_state.graph_instance = FoodGraph()
+    except Exception as e:
+        st.error(f"Gagal menginisialisasi FoodGraph asli: {e}")
+        st.stop()
 
 graph = st.session_state.graph_instance
-all_foods = list(graph.foods.values())
+
+# Pembacaan list makanan yang aman agar filter utama tidak crash
+def get_safe_foods_list(g_obj):
+    if hasattr(g_obj, 'foods'):
+        if isinstance(g_obj.foods, dict):
+            return list(g_obj.foods.values())
+        elif isinstance(g_obj.foods, list):
+            return g_obj.foods
+    return []
 
 
-# ─── SESSION STATE ────────────────────────────────────────────────────────────
+# ─── SESSION STATE MANAGEMENT ─────────────────────────────────────────────────
 if 'selected_foods' not in st.session_state:
     st.session_state.selected_foods = []
 if 'recommendations' not in st.session_state:
@@ -285,9 +291,13 @@ with st.sidebar:
     <hr style="border:none;border-top:1px solid #1E293B;margin:0 0 1.5rem;">
     """, unsafe_allow_html=True)
 
-    # Filter Utama
+    # Membaca Kategori secara Aman
+    try:
+        categories = ["Semua"] + [c.title() for c in graph.get_all_categories()]
+    except Exception:
+        categories = ["Semua", "Makanan Utama", "Cemilan", "Minuman"]
+        
     st.markdown("<label>Kategori</label>", unsafe_allow_html=True)
-    categories = ["Semua"] + [c.title() for c in graph.get_all_categories()]
     selected_category = st.selectbox("Kategori", categories, label_visibility="collapsed")
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -312,99 +322,177 @@ with st.sidebar:
     top_n = st.slider("Top N", 3, 12, 6, label_visibility="collapsed")
 
     st.markdown("""<hr style="border:none;border-top:1px solid #1E293B;margin:1.5rem 0;">""", unsafe_allow_html=True)
+    
+    # Hitung Statistik Total Node & Edges Secara Aman
+    t_nodes, t_edges = 0, 0
+    try:
+        t_nodes = graph.total_nodes()
+        t_edges = graph.total_edges()
+    except Exception:
+        if hasattr(graph, 'foods'):
+            t_nodes = len(graph.foods)
+        if hasattr(graph, 'adj_list'):
+            t_edges = sum(len(v) for v in graph.adj_list.values()) // 2
+
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown(f"""<div class="stat-card"><div class="stat-number">{graph.total_nodes()}</div><div class="stat-label">Makanan</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="stat-card"><div class="stat-number">{t_nodes}</div><div class="stat-label">Makanan</div></div>""", unsafe_allow_html=True)
     with c2:
-        st.markdown(f"""<div class="stat-card"><div class="stat-number">{graph.total_edges()}</div><div class="stat-label">Relasi</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="stat-card"><div class="stat-number">{t_edges}</div><div class="stat-label">Relasi</div></div>""", unsafe_allow_html=True)
 
     st.markdown("""<hr style="border:none;border-top:1px solid #1E293B;margin:1.5rem 0;">""", unsafe_allow_html=True)
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # EMULASI CRUD GRAF (TERISOLASI DI DALAM EXPANDER)
+    # EMULASI CRUD GRAF - ANTI ERROR & DEFENSIF MULTI-STRUKTUR
     # ═══════════════════════════════════════════════════════════════════════════
     with st.expander("🛠️ MANAGE DATA GRAF (CRUD)"):
         crud_mode = st.radio("Aksi Graf", ["Lihat Data (Read)", "Tambah Node (Create)", "Update Node", "Hapus Node (Delete)"])
         
-        # 1. READ
+        # Mapping struktur dinamis internal data graf
+        foods_map = {}
+        if hasattr(graph, 'foods'):
+            if isinstance(graph.foods, dict):
+                foods_map = graph.foods
+            elif isinstance(graph.foods, list):
+                for idx, item in enumerate(graph.foods):
+                    if isinstance(item, dict):
+                        f_id = item.get('id', f"node_{idx}")
+                        foods_map[f_id] = item
+                    else:
+                        f_id = getattr(item, 'id', f"node_{idx}")
+                        foods_map[f_id] = item
+
+        # 1. READ ACTION
         if crud_mode == "Lihat Data (Read)":
             st.write("**Daftar Node Graf Saat Ini:**")
-            for fid, f_data in graph.foods.items():
-                st.text(f"[{fid}] {f_data.get('emoji','')} {f_data.get('name')}")
+            if foods_map:
+                for fid, f_data in foods_map.items():
+                    if isinstance(f_data, dict):
+                        st.text(f"[{fid}] {f_data.get('emoji','🍜')} {f_data.get('name','Tanpa Nama')}")
+                    else:
+                        st.text(f"[{fid}] {getattr(f_data, 'emoji', '🍜')} {getattr(f_data, 'name', 'Tanpa Nama')}")
+            else:
+                st.warning("Data graf kosong.")
                 
-        # 2. CREATE
+        # 2. CREATE ACTION
         elif crud_mode == "Tambah Node (Create)":
             with st.form("create_node_form"):
-                new_id = st.text_input("ID Makanan (Unik / lowercase)", placeholder="misal: bakso_mercon")
-                new_name = st.text_input("Nama Makanan", placeholder="Bakso Mercon")
-                new_emoji = st.text_input("Emoji", value="🍜")
+                new_id = st.text_input("ID Makanan (lowercase & unik)", placeholder="misal: sate_maranggi")
+                new_name = st.text_input("Nama Makanan", placeholder="Sate Maranggi")
+                new_emoji = st.text_input("Emoji", value="🍢")
                 new_cat = st.text_input("Kategori", value="makanan utama").lower()
                 new_price = st.selectbox("Range Harga", ["murah", "sedang", "mahal"])
                 new_spicy = st.slider("Level Pedas", 0, 5, 0)
                 new_desc = st.text_area("Deskripsi Singkat")
-                new_tags = st.text_input("Tags (Pisahkan dengan koma)", placeholder="pedas, gurih")
+                new_tags = st.text_input("Tags (Pisahkan dengan koma)", placeholder="manis, gurih")
                 
                 if st.form_submit_button("Simpan Node"):
                     if new_id and new_name:
-                        if new_id in graph.foods:
-                            st.error("ID Makanan sudah ada!")
+                        if new_id in foods_map:
+                            st.error("ID Makanan tersebut sudah terdaftar!")
                         else:
-                            # Suntik data ke dalam struktur internal graph secara langsung
                             tag_list = [t.strip() for t in new_tags.split(",") if t.strip()]
-                            graph.foods[new_id] = {
+                            new_node_data = {
                                 "id": new_id, "name": new_name, "emoji": new_emoji,
                                 "category": new_cat, "price_range": new_price,
                                 "spicy_level": new_spicy, "description": new_desc, "tags": tag_list
                             }
-                            # Inisialisasi daftar adjacency list kosong untuk node baru
-                            if hasattr(graph, 'adj_list') and new_id not in graph.adj_list:
-                                graph.adj_list[new_id] = []
-                            st.success(f"Berhasil menambahkan {new_name}!")
-                            st.rerun()
+                            
+                            try:
+                                if isinstance(graph.foods, dict):
+                                    graph.foods[new_id] = new_node_data
+                                elif isinstance(graph.foods, list):
+                                    graph.foods.append(new_node_data)
+                                
+                                # Daftarkan ke relasi struktur adjacency list
+                                if hasattr(graph, 'adj_list') and isinstance(graph.adj_list, dict):
+                                    if new_id not in graph.adj_list:
+                                        graph.adj_list[new_id] = []
+                                        
+                                st.success(f"Berhasil menyuntikkan node: {new_name}!")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"Gagal menyimpan data ke objek graf: {ex}")
                     else:
-                        st.error("ID dan Nama wajib diisi!")
+                        st.error("ID dan Nama Makanan tidak boleh kosong!")
 
-        # 3. UPDATE
+        # 3. UPDATE ACTION
         elif crud_mode == "Update Node":
-            target_update_id = st.selectbox("Pilih Node untuk Diupdate", options=list(graph.foods.keys()))
-            if target_update_id:
-                current_node = graph.foods[target_update_id]
-                with st.form("update_node_form"):
-                    up_name = st.text_input("Nama Makanan", value=current_node.get('name'))
-                    up_emoji = st.text_input("Emoji", value=current_node.get('emoji', ''))
-                    up_cat = st.text_input("Kategori", value=current_node.get('category', ''))
-                    up_price = st.selectbox("Range Harga", ["murah", "sedang", "mahal"], index=["murah", "sedang", "mahal"].index(current_node.get('price_range', 'murah')))
-                    up_spicy = st.slider("Level Pedas", 0, 5, int(current_node.get('spicy_level', 0)))
-                    up_desc = st.text_area("Deskripsi Singkat", value=current_node.get('description', ''))
-                    up_tags = st.text_input("Tags", value=", ".join(current_node.get('tags', [])))
+            if foods_map:
+                target_update_id = st.selectbox("Pilih ID Node", options=list(foods_map.keys()))
+                if target_update_id:
+                    current_node = foods_map[target_update_id]
                     
-                    if st.form_submit_button("Update Node"):
-                        graph.foods[target_update_id].update({
-                            "name": up_name, "emoji": up_emoji, "category": up_cat.lower(),
-                            "price_range": up_price, "spicy_level": up_spicy, "description": up_desc,
-                            "tags": [t.strip() for t in up_tags.split(",") if t.strip()]
-                        })
-                        st.success(f"Node [{target_update_id}] berhasil diperbarui!")
-                        st.rerun()
+                    is_d = isinstance(current_node, dict)
+                    c_name = current_node.get('name', '') if is_d else getattr(current_node, 'name', '')
+                    c_emoji = current_node.get('emoji', '') if is_d else getattr(current_node, 'emoji', '')
+                    c_cat = current_node.get('category', '') if is_d else getattr(current_node, 'category', '')
+                    c_price = current_node.get('price_range', 'murah') if is_d else getattr(current_node, 'price_range', 'murah')
+                    c_spicy = current_node.get('spicy_level', 0) if is_d else getattr(current_node, 'spicy_level', 0)
+                    c_desc = current_node.get('description', '') if is_d else getattr(current_node, 'description', '')
+                    c_tags = current_node.get('tags', []) if is_d else getattr(current_node, 'tags', [])
 
-        # 4. DELETE
+                    with st.form("update_node_form"):
+                        up_name = st.text_input("Nama Makanan", value=c_name)
+                        up_emoji = st.text_input("Emoji", value=c_emoji)
+                        up_cat = st.text_input("Kategori", value=c_cat)
+                        up_price = st.selectbox("Harga", ["murah", "sedang", "mahal"], index=["murah", "sedang", "mahal"].index(c_price if c_price in ["murah", "sedang", "mahal"] else "murah"))
+                        up_spicy = st.slider("Level Pedas", 0, 5, int(c_spicy))
+                        up_desc = st.text_area("Deskripsi", value=c_desc)
+                        up_tags = st.text_input("Tags (Koma)", value=", ".join(c_tags) if isinstance(c_tags, list) else "")
+                        
+                        if st.form_submit_button("Lakukan Perbaruan"):
+                            updated_fields = {
+                                "name": up_name, "emoji": up_emoji, "category": up_cat.lower(),
+                                "price_range": up_price, "spicy_level": up_spicy, "description": up_desc,
+                                "tags": [t.strip() for t in up_tags.split(",") if t.strip()]
+                            }
+                            try:
+                                if isinstance(graph.foods, dict):
+                                    graph.foods[target_update_id].update(updated_fields)
+                                elif isinstance(graph.foods, list):
+                                    for idx, item in enumerate(graph.foods):
+                                        if isinstance(item, dict) and item.get('id') == target_update_id:
+                                            graph.foods[idx].update(updated_fields)
+                                        elif not isinstance(item, dict) and getattr(item, 'id', '') == target_update_id:
+                                            for k, v in updated_fields.items():
+                                                setattr(graph.foods[idx], k, v)
+                                st.success("Perubahan data node berhasil disimpan!")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"Gagal melakukan update: {ex}")
+            else:
+                st.warning("Tidak ada node yang bisa diubah.")
+
+        # 4. DELETE ACTION
         elif crud_mode == "Hapus Node (Delete)":
-            target_del_id = st.selectbox("Pilih Node untuk Dihapus", options=list(graph.foods.keys()))
-            if st.button("🔴 Hapus Permanen", use_container_width=True):
-                if target_del_id in graph.foods:
-                    # Hapus data node
-                    del graph.foods[target_del_id]
-                    # Bersihkan relasi dari adj_list jika ada
-                    if hasattr(graph, 'adj_list'):
-                        if target_del_id in graph.adj_list:
-                            del graph.adj_list[target_del_id]
-                        for k, v in graph.adj_list.items():
-                            graph.adj_list[k] = [edge for edge in v if edge != target_del_id]
-                    # Bersihkan dari daftar pilihan jika sedang dipilih
-                    if target_del_id in st.session_state.selected_foods:
-                        st.session_state.selected_foods.remove(target_del_id)
-                    st.success(f"Node [{target_del_id}] berhasil dihapus!")
-                    st.rerun()
+            if foods_map:
+                target_del_id = st.selectbox("Pilih ID Node untuk Dihapus", options=list(foods_map.keys()))
+                if st.button("🔴 Eksekusi Hapus", use_container_width=True):
+                    try:
+                        if isinstance(graph.foods, dict):
+                            if target_del_id in graph.foods:
+                                del graph.foods[target_del_id]
+                        elif isinstance(graph.foods, list):
+                            graph.foods = [item for item in graph.foods if (item.get('id') if isinstance(item, dict) else getattr(item, 'id', '')) != target_del_id]
+                        
+                        # Sinkronisasi pembersihan edges relasi
+                        if hasattr(graph, 'adj_list') and isinstance(graph.adj_list, dict):
+                            if target_del_id in graph.adj_list:
+                                del graph.adj_list[target_del_id]
+                            for k, v in graph.adj_list.items():
+                                if isinstance(v, list):
+                                    graph.adj_list[k] = [edge for edge in v if edge != target_del_id]
+                                    
+                        if target_del_id in st.session_state.selected_foods:
+                            st.session_state.selected_foods.remove(target_del_id)
+                            
+                        st.success("Node berhasil dihapus secara bersih dari Graf!")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Gagal eksekusi hapus: {ex}")
+            else:
+                st.warning("Tidak ada data yang bisa dihapus.")
 
 
 # ─── MAIN CONTENT ─────────────────────────────────────────────────────────────
@@ -423,7 +511,7 @@ st.markdown("""
 tab1, tab2, tab3 = st.tabs(["🔍  Rekomendasi", "🕸️  Graf Interaktif", "📚  Tentang Algoritma"])
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 1: REKOMENDASI
+# TAB 1: SCREEN REKOMENDASI UTAMA
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab1:
     col_left, col_right = st.columns([1.1, 0.9], gap="large")
@@ -431,12 +519,30 @@ with tab1:
     with col_left:
         cat_filter = None if selected_category == "Semua" else selected_category.lower()
         price_filter = None if selected_price == "Semua" else selected_price.lower()
-        filtered_foods = graph.filter_foods(category=cat_filter, max_spicy=max_spicy, price_range=price_filter)
+        
+        # Eksekusi filter bawaan secara aman
+        try:
+            filtered_foods = graph.filter_foods(category=cat_filter, max_spicy=max_spicy, price_range=price_filter)
+        except Exception:
+            # Fallback jika fungsi .filter_foods() error/tidak kompatibel
+            raw_list = get_safe_foods_list(graph)
+            filtered_foods = []
+            for f in raw_list:
+                is_d = isinstance(f, dict)
+                f_cat = f.get('category', '') if is_d else getattr(f, 'category', '')
+                f_spicy = f.get('spicy_level', 0) if is_d else getattr(f, 'spicy_level', 0)
+                f_price = f.get('price_range', '') if is_d else getattr(f, 'price_range', '')
+                
+                if cat_filter and f_cat.lower() != cat_filter: continue
+                if f_spicy > max_spicy: continue
+                if price_filter and f_price.lower() != price_filter: continue
+                
+                filtered_foods.append(f if is_d else f.__dict__)
 
-        st.markdown("""<div class="section-header"><h3>Pilih Makanan Favorit</h3><span class="section-tag">Pilih 1-5</span></div>""", unsafe_allow_html=True)
+        st.markdown("""<div class="section-header"><h3>Pilih Makanan Favorit</h3><span class="section-tag">Maks 5</span></div>""", unsafe_allow_html=True)
 
         if not filtered_foods:
-            st.markdown("""<div class="empty-state"><div class="empty-state-icon">🔍</div><div class="empty-state-text">Tidak ada makanan ditemukan</div><div class="empty-state-hint">Coba ubah filter di sidebar</div></div>""", unsafe_allow_html=True)
+            st.markdown("""<div class="empty-state"><div class="empty-state-icon">🔍</div><div class="empty-state-text">Tidak ada makanan ditemukan</div><div class="empty-state-hint">Coba longgarkan kriteria filter di sidebar</div></div>""", unsafe_allow_html=True)
         else:
             n_cols = 3
             pills_per_row = [filtered_foods[i:i+n_cols] for i in range(0, len(filtered_foods), n_cols)]
@@ -445,46 +551,69 @@ with tab1:
                 cols = st.columns(len(row))
                 for col, food in zip(cols, row):
                     with col:
-                        is_sel = food['id'] in st.session_state.selected_foods
-                        spicy_filled = food['spicy_level']
-                        spicy_str = "🔴" * spicy_filled + "⚫" * (5 - spicy_filled) if spicy_filled > 0 else "⚫⚫⚫⚫⚫"
+                        f_id = food.get('id')
+                        f_name = food.get('name')
+                        f_emoji = food.get('emoji', '🍜')
+                        f_spicy = food.get('spicy_level', 0)
+                        f_desc = food.get('description', '')
+
+                        is_sel = f_id in st.session_state.selected_foods
+                        spicy_str = "🔴" * f_spicy + "⚫" * (5 - f_spicy) if f_spicy > 0 else "⚫⚫⚫⚫⚫"
                         
                         check = "✓ " if is_sel else ""
-                        label = f"{food['emoji']}\n{check}{food['name']}\n{spicy_str}"
+                        label = f"{f_emoji}\n{check}{f_name}\n{spicy_str}"
 
                         if is_sel:
-                            st.markdown(f"""<style>div[data-testid="stButton"]:has(button[key="pill_{food['id']}"]) > button {{ border-color: #F59E0B !important; background: rgba(245,158,11,0.12) !important; color: #F59E0B !important; }}</style>""", unsafe_allow_html=True)
+                            st.markdown(f"""<style>div[data-testid="stButton"]:has(button[key="pill_{f_id}"]) > button {{ border-color: #F59E0B !important; background: rgba(245,158,11,0.12) !important; color: #F59E0B !important; }}</style>""", unsafe_allow_html=True)
 
-                        if st.button(label, key=f"pill_{food['id']}", help=food['description'], use_container_width=True):
-                            if food['id'] in st.session_state.selected_foods:
-                                st.session_state.selected_foods.remove(food['id'])
+                        if st.button(label, key=f"pill_{f_id}", help=f_desc, use_container_width=True):
+                            if f_id in st.session_state.selected_foods:
+                                st.session_state.selected_foods.remove(f_id)
                             elif len(st.session_state.selected_foods) < 5:
-                                st.session_state.selected_foods.append(food['id'])
+                                st.session_state.selected_foods.append(f_id)
                             st.rerun()
 
+        # Tampilkan chip pilihan makanan
         if st.session_state.selected_foods:
             st.markdown("<hr class='fancy-divider'>", unsafe_allow_html=True)
             st.markdown("""<div class="section-header"><h3>Makanan Dipilih</h3></div>""", unsafe_allow_html=True)
 
-            sel_foods_data = [graph.foods[fid] for fid in st.session_state.selected_foods if fid in graph.foods]
-            if sel_foods_data:
-                chip_cols = st.columns(len(sel_foods_data))
-                for ci, sf in enumerate(sel_foods_data):
+            sel_chips = []
+            for fid in st.session_state.selected_foods:
+                if fid in foods_map:
+                    node = foods_map[fid]
+                    sel_chips.append({
+                        "emoji": node.get('emoji','🍜') if isinstance(node, dict) else getattr(node, 'emoji', '🍜'),
+                        "name": node.get('name','') if isinstance(node, dict) else getattr(node, 'name', '')
+                    })
+            
+            if sel_chips:
+                chip_cols = st.columns(len(sel_chips))
+                for ci, sc in enumerate(sel_chips):
                     with chip_cols[ci]:
-                        st.markdown(f"""<div style="display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.35);border-radius:999px;padding:7px 12px;font-size:0.8rem;font-weight:600;color:#F59E0B;text-align:center;white-space:nowrap;"><span>{sf['emoji']}</span><span>{sf['name']}</span></div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div style="display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.35);border-radius:999px;padding:7px 12px;font-size:0.8rem;font-weight:600;color:#F59E0B;text-align:center;white-space:nowrap;"><span>{sc['emoji']}</span><span>{sc['name']}</span></div>""", unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown('<div class="btn-action">', unsafe_allow_html=True)
                 if st.button("🔍 Cari Rekomendasi", use_container_width=True, key="btn_cari"):
-                    with st.spinner("Menjalankan algoritma..."):
-                        if "BFS" in algo:
-                            recs = graph.bfs_recommend(st.session_state.selected_foods, max_depth=2, top_n=top_n)
-                        else:
-                            dfs_path = graph.dfs_explore(st.session_state.selected_foods[0], max_depth=3)
-                            recs = [{**graph.foods[fid], 'score': 1.0/(i+1), 'depth': i, 'reason': 'Jalur Eksplorasi DFS'} for i, fid in enumerate(dfs_path) if fid not in st.session_state.selected_foods and fid in graph.foods][:top_n]
-                    st.session_state.recommendations = recs
+                    with st.spinner("Menelusuri struktur graf..."):
+                        try:
+                            if "BFS" in algo:
+                                recs = graph.bfs_recommend(st.session_state.selected_foods, max_depth=2, top_n=top_n)
+                            else:
+                                dfs_path = graph.dfs_explore(st.session_state.selected_foods[0], max_depth=3)
+                                recs = []
+                                for i, fid in enumerate(dfs_path):
+                                    if fid not in st.session_state.selected_foods and fid in foods_map:
+                                        node_raw = foods_map[fid]
+                                        n_dict = node_raw if isinstance(node_raw, dict) else node_raw.__dict__
+                                        recs.append({**n_dict, 'score': 1.0/(i+1), 'depth': i, 'reason': 'Jalur Eksplorasi DFS'})
+                                recs = recs[:top_n]
+                            st.session_state.recommendations = recs
+                        except Exception as algo_err:
+                            st.error(f"Algoritma penelusuran gagal: {algo_err}. Kemungkinan struktur graf internal Anda dimodifikasi.")
                     st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -497,123 +626,125 @@ with tab1:
                 st.markdown('</div>', unsafe_allow_html=True)
 
     with col_right:
-        st.markdown("""<div class="section-header"><h3>Hasil Rekomendasi</h3><span class="section-tag">Hasil</span></div>""", unsafe_allow_html=True)
+        st.markdown("""<div class="section-header"><h3>Hasil Rekomendasi</h3><span class="section-tag">Output</span></div>""", unsafe_allow_html=True)
 
         if not st.session_state.recommendations:
             st.markdown("""<div class="empty-state"><div class="empty-state-icon">🍜</div><div class="empty-state-text">Belum ada rekomendasi</div><div class="empty-state-hint">Pilih makanan favoritmu di sebelah kiri,<br>lalu klik "Cari Rekomendasi"</div></div>""", unsafe_allow_html=True)
         else:
-            algo_name = "BFS (Breadth-First Search)" if "BFS" in algo else "DFS (Depth-First Search)"
-            st.markdown(f"""<div class="algo-banner"><strong>Algoritma: {algo_name}</strong><br>Ditemukan <strong>{len(st.session_state.recommendations)}</strong> rekomendasi berdasarkan <strong>{len(st.session_state.selected_foods)}</strong> makanan pilihan.</div>""", unsafe_allow_html=True)
+            algo_title = "BFS (Breadth-First Search)" if "BFS" in algo else "DFS (Depth-First Search)"
+            st.markdown(f"""<div class="algo-banner"><strong>Algoritma: {algo_title}</strong><br>Ditemukan <strong>{len(st.session_state.recommendations)}</strong> hasil kecocokan graf.</div>""", unsafe_allow_html=True)
 
-            max_score = max(r['score'] for r in st.session_state.recommendations) or 1
+            valid_recs = [r for r in st.session_state.recommendations if (r.get('id') if isinstance(r, dict) else getattr(r, 'id', '')) in foods_map]
+            
+            if valid_recs:
+                max_score = max((r.get('score', 1) if isinstance(r, dict) else getattr(r, 'score', 1)) for r in valid_recs) or 1
+                
+                for i, rec in enumerate(valid_recs):
+                    is_d = isinstance(rec, dict)
+                    r_id = rec.get('id') if is_d else getattr(rec, 'id')
+                    r_name = rec.get('name') if is_d else getattr(rec, 'name')
+                    r_emoji = rec.get('emoji', '🍜') if is_d else getattr(rec, 'emoji', '🍜')
+                    r_cat = rec.get('category', '') if is_d else getattr(rec, 'category', '')
+                    r_price = rec.get('price_range', 'murah') if is_d else getattr(rec, 'price_range', 'murah')
+                    r_desc = rec.get('description', '') if is_d else getattr(rec, 'description', '')
+                    r_tags = rec.get('tags', []) if is_d else getattr(rec, 'tags', [])
+                    r_spicy = rec.get('spicy_level', 0) if is_d else getattr(rec, 'spicy_level', 0)
+                    r_score = rec.get('score', 0) if is_d else getattr(rec, 'score', 0)
+                    r_reason = rec.get('reason', 'Terhubung dalam kluster graf yang mirip') if is_d else getattr(rec, 'reason', 'Terhubung dalam kluster')
 
-            for i, rec in enumerate(st.session_state.recommendations):
-                # Memastikan node rekomendasi yang dicarat masih tersedia di dalam objek graf internal
-                if rec['id'] not in graph.foods:
-                    continue
-                score_pct = int((rec['score'] / max_score) * 100)
-                rank_class = "top" if i < 3 else ""
-                rank_display = ["🥇", "🥈", "🥉"][i] if i < 3 else f"#{i+1}"
+                    score_pct = int((r_score / max_score) * 100)
+                    rank_display = ["🥇", "🥈", "🥉"][i] if i < 3 else f"#{i+1}"
 
-                tags_html = '<div class="tag-container">'
-                for tag in rec.get('tags', []):
-                    tags_html += f'<span class="tag {tag.split()[0]}">{tag}</span>'
-                tags_html += '</div>'
+                    tags_html = '<div class="tag-container">'
+                    for tag in r_tags:
+                        tags_html += f'<span class="tag {str(tag).split()[0]}">{tag}</span>'
+                    tags_html += '</div>'
 
-                spicy_html = '<div class="spicy-row"><span style="font-size:0.7rem;color:#475569;margin-right:4px;">PEDAS</span>'
-                for dot_i in range(5):
-                    cls = "active" if dot_i < rec.get('spicy_level', 0) else ""
-                    spicy_html += f'<span class="spicy-dot {cls}"></span>'
-                spicy_html += '</div>'
+                    spicy_html = '<div class="spicy-row"><span style="font-size:0.7rem;color:#475569;margin-right:4px;">PEDAS</span>'
+                    for dot_i in range(5):
+                        cls = "active" if dot_i < r_spicy else ""
+                        spicy_html += f'<span class="spicy-dot {cls}"></span>'
+                    spicy_html += '</div>'
 
-                price_colors = {'murah': '#22C55E', 'sedang': '#F59E0B', 'mahal': '#EF4444'}
-                price_color = price_colors.get(rec.get('price_range', ''), '#94A3B8')
+                    price_color = {'murah': '#22C55E', 'sedang': '#F59E0B', 'mahal': '#EF4444'}.get(r_price.lower(), '#94A3B8')
 
-                st.markdown(f"""
-                <div class="rec-card">
-                    <div style="display:flex;align-items:flex-start;justify-content:space-between;">
-                        <div style="flex:1;">
-                            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-                                <span style="font-size:1.5rem;">{rec['emoji']}</span>
-                                <div>
-                                    <div class="rec-name">{rec['name']}</div>
-                                    <div style="font-size:0.7rem;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">
-                                        {rec.get('category','').title()} · <span style="color:{price_color}">{rec.get('price_range','').title()}</span>
+                    st.markdown(f"""
+                    <div class="rec-card">
+                        <div style="display:flex;align-items:flex-start;justify-content:space-between;">
+                            <div style="flex:1;">
+                                <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                                    <span style="font-size:1.5rem;">{r_emoji}</span>
+                                    <div>
+                                        <div class="rec-name">{r_name}</div>
+                                        <div style="font-size:0.7rem;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">
+                                            {r_cat.title()} · <span style="color:{price_color}">{r_price.title()}</span>
+                                        </div>
                                     </div>
                                 </div>
+                                <div class="rec-desc">{r_desc}</div>
+                                {tags_html}
+                                {spicy_html}
+                                <div class="score-bar-container">
+                                    <div class="score-label">Skor Relasi Jalur</div>
+                                    <div class="score-bar-track"><div class="score-bar-fill" style="width:{score_pct}%"></div></div>
+                                </div>
                             </div>
-                            <div class="rec-desc">{rec['description']}</div>
-                            {tags_html}
-                            {spicy_html}
-                            <div class="score-bar-container">
-                                <div class="score-label">Skor Kemiripan</div>
-                                <div class="score-bar-track"><div class="score-bar-fill" style="width:{score_pct}%"></div></div>
-                            </div>
+                            <div class="rec-rank" style="margin-left:1rem;min-width:40px;text-align:right;">{rank_display}</div>
                         </div>
-                        <div class="rec-rank {rank_class}" style="margin-left:1rem;min-width:40px;text-align:right;">{rank_display}</div>
+                        <div class="rec-reason">💡 {r_reason}</div>
                     </div>
-                    <div class="rec-reason">💡 {rec.get('reason','Terhubung dalam graph')}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
 
-            if "BFS" in algo and st.session_state.selected_foods and st.session_state.recommendations:
-                st.markdown("""<div class="section-header" style="margin-top:1.5rem;"><h3>Jalur Koneksi</h3><span class="section-tag">BFS Path</span></div>""", unsafe_allow_html=True)
-                source = st.session_state.selected_foods[0]
-                target = st.session_state.recommendations[0]['id']
-                if source in graph.foods and target in graph.foods:
-                    path = graph.get_path_between(source, target)
-                    if path:
-                        path_html = '<div class="path-trace">'
-                        for pi, node_id in enumerate(path):
-                            food_n = graph.foods.get(node_id, {})
-                            path_html += f'<span class="path-node">{food_n.get("emoji","")} {food_n.get("name","")}</span>'
-                            if pi < len(path) - 1:
-                                path_html += '<span class="path-arrow">→</span>'
-                        path_html += '</div>'
-                        st.markdown(path_html, unsafe_allow_html=True)
+            # Bagian visualisasi Path antar node secara aman
+            if "BFS" in algo and st.session_state.selected_foods and valid_recs:
+                try:
+                    source = st.session_state.selected_foods[0]
+                    target = valid_recs[0].get('id') if isinstance(valid_recs[0], dict) else getattr(valid_recs[0], 'id')
+                    if source in foods_map and target in foods_map:
+                        path = graph.get_path_between(source, target)
+                        if path:
+                            st.markdown("""<div class="section-header" style="margin-top:1.5rem;"><h3>Jalur Koneksi Graf</h3><span class="section-tag">Shortest Path</span></div>""", unsafe_allow_html=True)
+                            path_html = '<div class="path-trace">'
+                            for pi, node_id in enumerate(path):
+                                if node_id in foods_map:
+                                    n_node = foods_map[node_id]
+                                    n_emoji = n_node.get('emoji','🍜') if isinstance(n_node, dict) else getattr(n_node, 'emoji', '🍜')
+                                    n_name = n_node.get('name','') if isinstance(n_node, dict) else getattr(n_node, 'name', '')
+                                    path_html += f'<span class="path-node">{n_emoji} {n_name}</span>'
+                                    if pi < len(path) - 1:
+                                        path_html += '<span class="path-arrow">→</span>'
+                            path_html += '</div>'
+                            st.markdown(path_html, unsafe_allow_html=True)
+                except Exception:
+                    pass
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2: GRAPH VISUALIZATION
+# TAB 2: VISUALISASI GRAF
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab2:
     st.markdown("""
     <div class="section-header">
-        <h3>Visualisasi Graf Makanan</h3>
-        <span class="section-tag">Interaktif</span>
+        <h3>Visualisasi Graf Makanan Interaktif</h3>
+        <span class="section-tag">Network Canvas</span>
     </div>
-    <p style="color:#64748B;font-size:0.85rem;margin-bottom:1.5rem;">
-        Graf lengkap jaringan makanan nusantara. Node berwarna emas merepresentasikan node pilihan Anda.
-    </p>
     """, unsafe_allow_html=True)
-
-    legend_col1, legend_col2, legend_col3 = st.columns(3)
-    with legend_col1:
-        st.markdown("""<div class="stat-card"><div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:#475569;margin-bottom:8px;">Node</div><div style="font-size:0.85rem;color:#94A3B8;">Setiap lingkaran = 1 Menu Makanan</div></div>""", unsafe_allow_html=True)
-    with legend_col2:
-        st.markdown("""<div class="stat-card"><div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:#475569;margin-bottom:8px;">Edges / Sisi</div><div style="font-size:0.85rem;color:#94A3B8;">Garis Penghubung = Kesamaan Kategori & Bahan</div></div>""", unsafe_allow_html=True)
-    with legend_col3:
-        st.markdown("""<div class="stat-card"><div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:#475569;margin-bottom:8px;">Interaksi</div><div style="font-size:0.85rem;color:#94A3B8;">Gunakan Scroll untuk Zoom, Geser untuk Eksplorasi</div></div>""", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    render_graph(graph, st.session_state.selected_foods)
+    try:
+        render_graph(graph, st.session_state.selected_foods)
+    except Exception as viz_err:
+        st.warning(f"Garis relasi graf sedang memproses penyesuaian node baru: {viz_err}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3: TENTANG ALGORITMA
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab3:
-    st.markdown("""<div class="section-header"><h3>Eksplorasi Teori Struktur Data Graf</h3><span class="section-tag">Eduksional</span></div>""", unsafe_allow_html=True)
-    html_info = """
+    st.markdown("""<div class="section-header"><h3>Teori Dasar Struktur Data</h3></div>""", unsafe_allow_html=True)
+    st.markdown("""
     <div class="rec-card">
-        <div class="rec-name" style="color: var(--accent-gold);">1. Breadth-First Search (BFS)</div>
-        <div class="rec-desc" style="font-size:0.85rem;">
-            BFS menelusuri graf secara <strong>horizontal (level demi level)</strong>. Algoritma ini menjamin penemuan jalur terpendek (*shortest path*) berdasarkan jumlah *hop*. Sangat cocok untuk mencari makanan alternatif yang paling dekat kemiripannya.
-        </div>
+        <div class="rec-name" style="color: var(--accent-gold);">Breadth-First Search (BFS)</div>
+        <div class="rec-desc" style="font-size:0.85rem;">Menelusuri tetangga terdekat lapis demi lapis untuk akurasi rekomendasi kemiripan terbaik.</div>
     </div>
     <div class="rec-card">
-        <div class="rec-name" style="color: var(--accent-orange);">2. Depth-First Search (DFS)</div>
-        <div class="rec-desc" style="font-size:0.85rem;">
-            DFS melakukan penelusuran secara <strong>vertikal (sepanjang mungkin hingga ujung cabang)</strong> sebelum melakukan *backtracking*. DFS membawa user mengeksplorasi rasa yang lebih unik dan melompat jauh ke kluster makanan lain yang tidak terduga.
-        </div>
+        <div class="rec-name" style="color: var(--accent-orange);">Depth-First Search (DFS)</div>
+        <div class="rec-desc" style="font-size:0.85rem;">Menjelajah jalur silsilah rasa terdalam ke kluster menu lain untuk kejutan rekomendasi unik.</div>
     </div>
-    """
-    st.markdown(html_info, unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
