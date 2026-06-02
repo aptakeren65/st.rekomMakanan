@@ -2,113 +2,205 @@ from collections import defaultdict, deque
 import json
 import os
 
-    with st.expander("🛠️ MANAGE DATA GRAF (CRUD)"):
-        crud_mode = st.radio("Aksi Graf", ["Lihat Data (Read)", "Tambah Node (Create)", "Update Node", "Hapus Node (Delete)"])
-        
-        # Menggunakan objek penampung sesuai file food_graph.py Anda
-        foods_map = graph.foods if hasattr(graph, 'foods') else {}
-        adj_data = graph.adjacency_list if hasattr(graph, 'adjacency_list') else {}
 
-        # 1. READ
-        if crud_mode == "Lihat Data (Read)":
-            st.write("**Daftar Node Graf Saat Ini:**")
-            if foods_map:
-                for fid, f_data in foods_map.items():
-                    st.text(f"[{fid}] {f_data.get('emoji','🍜')} {f_data.get('name','Tanpa Nama')}")
-            else:
-                st.warning("Data graf kosong.")
-                
-        # 2. CREATE
-        elif crud_mode == "Tambah Node (Create)":
-            with st.form("create_node_form"):
-                new_id = st.text_input("ID Makanan (lowercase & unik)", placeholder="misal: sate_maranggi")
-                new_name = st.text_input("Nama Makanan", placeholder="Sate Maranggi")
-                new_emoji = st.text_input("Emoji", value="🍢")
-                new_cat = st.text_input("Kategori", value="makanan utama").lower()
-                new_price = st.selectbox("Range Harga", ["murah", "sedang", "mahal"])
-                new_spicy = st.slider("Level Pedas", 0, 5, 0)
-                new_desc = st.text_area("Deskripsi Singkat")
-                new_tags = st.text_input("Tags (Pisahkan dengan koma)", placeholder="manis, gurih")
-                
-                if st.form_submit_button("Simpan Node"):
-                    if new_id and new_name:
-                        if new_id in foods_map:
-                            st.error("ID Makanan tersebut sudah terdaftar!")
-                        else:
-                            tag_list = [t.strip() for t in new_tags.split(",") if t.strip()]
-                            # Menyuntikkan field wajib default untuk visualisasi graf
-                            new_node_data = {
-                                "id": new_id, "name": new_name, "emoji": new_emoji,
-                                "category": new_cat, "price_range": new_price,
-                                "spicy_level": new_spicy, "description": new_desc, "tags": tag_list,
-                                "image_color": "#F59E0B" # Warna default node baru agar tidak crash saat viz
-                            }
-                            try:
-                                # Daftarkan ke class FoodGraph Anda
-                                graph.add_node(new_node_data)
-                                
-                                # Inisialisasi list tetangga kosong di defaultdict asli Anda
-                                if new_id not in adj_data:
-                                    adj_data[new_id] = []
-                                        
-                                st.success(f"Berhasil menambahkan node: {new_name}!")
-                                st.rerun()
-                            except Exception as ex:
-                                st.error(f"Gagal menyimpan data ke graf: {ex}")
-                    else:
-                        st.error("ID dan Nama Makanan wajib diisi!")
+class FoodGraph:
+    """
+    Graf makanan menggunakan Adjacency List (Weighted & Undirected)
+    Setiap node = makanan, setiap edge = relasi antar makanan
+    """
 
-        # 3. UPDATE
-        elif crud_mode == "Update Node":
-            if foods_map:
-                target_update_id = st.selectbox("Pilih ID Node", options=list(foods_map.keys()))
-                if target_update_id:
-                    current_node = foods_map[target_update_id]
+    def __init__(self):
+        self.adjacency_list = defaultdict(list)  # {food_id: [(neighbor_id, weight, reason)]}
+        self.foods = {}  # {food_id: food_data}
+        self._load_data()
 
-                    with st.form("update_node_form"):
-                        up_name = st.text_input("Nama Makanan", value=current_node.get('name', ''))
-                        up_emoji = st.text_input("Emoji", value=current_node.get('emoji', ''))
-                        up_cat = st.text_input("Kategori", value=current_node.get('category', ''))
-                        up_price = st.selectbox("Harga", ["murah", "sedang", "mahal"], index=["murah", "sedang", "mahal"].index(current_node.get('price_range', 'murah')))
-                        up_spicy = st.slider("Level Pedas", 0, 5, int(current_node.get('spicy_level', 0)))
-                        up_desc = st.text_area("Deskripsi", value=current_node.get('description', ''))
-                        up_tags = st.text_input("Tags (Koma)", value=", ".join(current_node.get('tags', [])))
-                        
-                        if st.form_submit_button("Simpan Perubahan"):
-                            current_node.update({
-                                "name": up_name, "emoji": up_emoji, "category": up_cat.lower(),
-                                "price_range": up_price, "spicy_level": up_spicy, "description": up_desc,
-                                "tags": [t.strip() for t in up_tags.split(",") if t.strip()]
-                            })
-                            st.success("Node berhasil diperbarui!")
-                            st.rerun()
-            else:
-                st.warning("Tidak ada node yang tersedia.")
+    def _load_data(self):
+        """Load data makanan dari JSON dan bangun graph"""
+        data_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'foods.json')
+        with open(data_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
-        # 4. DELETE
-        elif crud_mode == "Hapus Node (Delete)":
-            if foods_map:
-                target_del_id = st.selectbox("Pilih ID Node untuk Dihapus", options=list(foods_map.keys()))
-                if st.button("🔴 Eksekusi Hapus", use_container_width=True):
-                    try:
-                        # 1. Hapus dari daftar makanan utama
-                        if target_del_id in foods_map:
-                            del foods_map[target_del_id]
-                        
-                        # 2. Hapus total node dan relasi keluar-masuk dari adjacency_list asli Anda
-                        if target_del_id in adj_data:
-                            del adj_data[target_del_id]
-                        
-                        for k, v in adj_data.items():
-                            adj_data[k] = [edge for edge in v if edge[0] != target_del_id]
-                                    
-                        if target_del_id in st.session_state.selected_foods:
-                            st.session_state.selected_foods.remove(target_del_id)
-                            
-                        st.success("Node dan relasinya berhasil dihapus bersih!")
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(f"Gagal menghapus node: {ex}")
-            else:
-                st.warning("Tidak ada data untuk dihapus.")r v in self.adjacency_list.values())
-        return total // 2  # undirected
+        # Masukkan semua node
+        for food in data['foods']:
+            self.add_node(food)
+
+        # Masukkan semua edge (undirected)
+        for rel in data['relations']:
+            self.add_edge(rel['from'], rel['to'], rel['weight'], rel['reason'])
+
+    def add_node(self, food_data: dict):
+        """Tambah node (makanan) ke graph"""
+        self.foods[food_data['id']] = food_data
+
+    def add_edge(self, food_a: str, food_b: str, weight: float = 1.0, reason: str = ""):
+        """Tambah edge antara dua makanan (undirected)"""
+        self.adjacency_list[food_a].append((food_b, weight, reason))
+        self.adjacency_list[food_b].append((food_a, weight, reason))
+
+    def get_neighbors(self, food_id: str) -> list:
+        """Ambil semua tetangga dari sebuah node"""
+        return self.adjacency_list.get(food_id, [])
+
+    def bfs_recommend(self, start_ids: list, max_depth: int = 2, top_n: int = 8) -> list:
+        """
+        BFS dari beberapa node awal sekaligus
+        Mengembalikan rekomendasi berdasarkan jarak dan bobot edge
+        
+        Returns: [(food_id, score, depth, reason)]
+        """
+        visited = set(start_ids)
+        scores = {}  # {food_id: (score, depth, reason)}
+        queue = deque()
+
+        # Masukkan semua start node ke queue
+        for start_id in start_ids:
+            if start_id in self.foods:
+                visited.add(start_id)
+                for neighbor, weight, reason in self.get_neighbors(start_id):
+                    if neighbor not in visited:
+                        queue.append((neighbor, 1, weight, reason))
+
+        while queue:
+            food_id, depth, score, reason = queue.popleft()
+
+            if depth > max_depth:
+                continue
+
+            if food_id not in visited:
+                visited.add(food_id)
+                # Bobot skor: semakin dekat, semakin tinggi
+                depth_penalty = 1.0 / depth
+                final_score = score * depth_penalty
+
+                if food_id not in scores or final_score > scores[food_id][0]:
+                    scores[food_id] = (final_score, depth, reason)
+
+                # Lanjut BFS ke tetangga berikutnya
+                for neighbor, weight, reason in self.get_neighbors(food_id):
+                    if neighbor not in visited:
+                        queue.append((neighbor, depth + 1, weight, reason))
+
+        # Sort berdasarkan score tertinggi
+        results = [
+            {
+                **self.foods[fid],
+                'score': s[0],
+                'depth': s[1],
+                'reason': s[2]
+            }
+            for fid, s in scores.items()
+            if fid in self.foods
+        ]
+        results.sort(key=lambda x: x['score'], reverse=True)
+        return results[:top_n]
+
+    def dfs_explore(self, start_id: str, visited=None, depth=0, max_depth=3) -> list:
+        """
+        DFS dari node awal - menjelajahi jalur terpanjang satu keluarga rasa
+        Returns: list of food_ids dalam urutan traversal DFS
+        """
+        if visited is None:
+            visited = set()
+
+        if start_id in visited or depth > max_depth:
+            return []
+
+        visited.add(start_id)
+        path = [start_id]
+
+        # Urutkan tetangga berdasarkan bobot (greedy DFS)
+        neighbors = sorted(
+            self.get_neighbors(start_id),
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        for neighbor_id, weight, reason in neighbors:
+            if neighbor_id not in visited:
+                sub_path = self.dfs_explore(neighbor_id, visited, depth + 1, max_depth)
+                path.extend(sub_path)
+
+        return path
+
+    def get_path_between(self, source: str, target: str) -> list:
+        """BFS untuk menemukan jalur terpendek antara dua makanan"""
+        if source == target:
+            return [source]
+
+        visited = {source}
+        queue = deque([(source, [source])])
+
+        while queue:
+            current, path = queue.popleft()
+            for neighbor, _, _ in self.get_neighbors(current):
+                if neighbor == target:
+                    return path + [neighbor]
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, path + [neighbor]))
+        return []
+
+    def filter_foods(self, category=None, tags=None, max_spicy=5, price_range=None) -> list:
+        """Filter makanan berdasarkan kriteria"""
+        results = []
+        for food_id, food in self.foods.items():
+            if category and food['category'] != category:
+                continue
+            if tags and not any(t in food['tags'] for t in tags):
+                continue
+            if food['spicy_level'] > max_spicy:
+                continue
+            if price_range and food['price_range'] != price_range:
+                continue
+            results.append(food)
+        return results
+
+    def get_graph_data_for_viz(self, highlight_ids=None) -> dict:
+        """Export data graph untuk visualisasi pyvis/networkx"""
+        nodes = []
+        edges = []
+        seen_edges = set()
+
+        for food_id, food in self.foods.items():
+            is_highlighted = highlight_ids and food_id in highlight_ids
+            nodes.append({
+                'id': food_id,
+                'label': food['name'],
+                'emoji': food['emoji'],
+                'color': food['image_color'],
+                'highlighted': is_highlighted,
+                'category': food['category'],
+                'spicy': food['spicy_level']
+            })
+
+        for food_id in self.adjacency_list:
+            for neighbor_id, weight, reason in self.adjacency_list[food_id]:
+                edge_key = tuple(sorted([food_id, neighbor_id]))
+                if edge_key not in seen_edges:
+                    seen_edges.add(edge_key)
+                    edges.append({
+                        'from': food_id,
+                        'to': neighbor_id,
+                        'weight': weight,
+                        'reason': reason,
+                        'highlighted': highlight_ids and (food_id in highlight_ids or neighbor_id in highlight_ids)
+                    })
+
+        return {'nodes': nodes, 'edges': edges}
+
+    def get_all_categories(self) -> list:
+        cats = list(set(f['category'] for f in self.foods.values()))
+        return sorted(cats)
+
+    def get_all_tags(self) -> list:
+        tags = set()
+        for f in self.foods.values():
+            tags.update(f['tags'])
+        return sorted(list(tags))
+
+    def total_nodes(self) -> int:
+        return len(self.foods)
+
+    def total_edges(self) -> int:
+        total = sum(len(v) for v in self.adjacency_list.values())
+        return total // 2  # undirected ini gref nya code nya
